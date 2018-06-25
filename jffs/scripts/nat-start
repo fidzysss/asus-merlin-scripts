@@ -1,0 +1,56 @@
+#!/bin/sh
+
+#
+# author: fidzysss
+#
+
+MODULE=$(basename $0)
+
+source /jffs/bin/functions.bash
+
+# nb try by windows (in sec) before blackilisting
+DEFAULT_NBTRY=5
+DEFAULT_WINDOW=60
+# list of internal network (use network/netmask)
+INTERNAL=""
+
+#log $LVL_INFO "Wait 120 sec"
+#sleep 120
+
+log $LVL_INFO "Create dynamic port translation"
+cat /jffs/etc/port_redirect | egrep -v '^#' | while read line
+do
+	chain=$(echo $line | cut -d" " -f1)
+	sport=$(echo $line | cut -d" " -f2)
+	dip=$(echo $line | cut -d" " -f3)
+	dport=$(echo $line | cut -d" " -f4)
+	bfp=$(echo $line | cut -d" " -f5)
+	internal=$(echo $line | cut -d" " -f6)
+	window=$(echo $line | cut -d" " -f7)
+	try=$(echo $line | cut -d" " -f8)
+	if [[ -s $window ]]; then
+		window=$DEFAULT_WINDOW
+	fi
+	if [[ -s $try ]]; then
+		try=$DEFAULT_NBTRY
+	fi
+	if [[ "x${bfp}" = "xtrue" ]]; then
+		log $LVL_INFO "add chain: $chain with source port: $sport , destination ip: $dip , destination port: $dport and $try tries every $window seconds"
+		iptables -N ${chain}-BFP -t nat
+		iptables -A ${chain}-BFP -t nat -m recent --set --name ${chain} --rsource
+		iptables -A ${chain}-BFP -t nat -m recent --update --seconds $window --hitcount $try --name ${chain} --rsource -j RETURN
+		iptables -A ${chain}-BFP -t nat -p tcp --dport $dport -m state --state NEW -j DNAT --to-destination $dip:$dport
+		iptables -I VSERVER -t nat -p tcp --dport $dport -m state --state NEW -j ${chain}-BFP
+	else
+		if [[ "x${internal}" = "xtrue" ]]; then
+			log $LVL_INFO "Restrict $chain to local network"
+			for network in $(echo $INTERNAL)
+			do
+				iptables -t nat -I VSERVER -p tcp -m tcp -s $network --dport $sport -j DNAT --to $dip:$dport
+			done
+		else
+			log $LVL_INFO "Redirect chain $chain"
+			iptables -t nat -I VSERVER -p tcp -m tcp --dport $sport -j DNAT --to $dip:$dport
+		fi
+	fi
+done
